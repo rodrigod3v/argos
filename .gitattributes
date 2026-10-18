@@ -1,0 +1,8 @@
+# Normaliza fim de linha. gradlew PRECISA ser LF pra rodar em Linux/macOS.
+* text=auto eol=lf
+*.bat text eol=crlf
+gradlew text eol=lf
+*.jar binary
+*.png binary
+*.apk binary
+*.aab binary
