@@ -7,7 +7,9 @@ import android.content.Intent
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import com.argos.core.routing.CommandRouter
+import android.util.Log
+import com.argos.core.grammar.AppGrammar
+import com.argos.core.model.Command
 import com.argos.core.wake.WakePhrase
 import com.argos.data.system.AndroidStatusSink
 import com.argos.di.Graph
@@ -18,7 +20,7 @@ import com.argos.domain.port.SpeechResult
  * Loop de voz + keep-alive. Foreground service tipo microphone,
  * senao o Android mata o microfone em background.
  *
- * Orquestra so isso: ouvidos -> wake -> router -> caso de uso -> fala.
+ * Ouvidos sao continuos (Vosk). O gate de wake word fica no texto.
  */
 class ArgosVoiceService : Service(), SpeechInput.Listener {
 
@@ -26,6 +28,7 @@ class ArgosVoiceService : Service(), SpeechInput.Listener {
     private val output get() = Graph.speechOutput
     private val status get() = Graph.status
     private val handle get() = Graph.handleCommand
+    private val router get() = Graph.router
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -37,7 +40,7 @@ class ArgosVoiceService : Service(), SpeechInput.Listener {
         input.setListener(this)
         startForeground(NOTIFICATION_ID, buildNotification(IDLE_HINT))
         running = true
-        status.report("Ouvindo.")
+        status.report("Preparando escuta offline...")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -45,7 +48,7 @@ class ArgosVoiceService : Service(), SpeechInput.Listener {
             stopSelf()
             return START_NOT_STICKY
         }
-        listen()
+        input.start()
         return START_STICKY
     }
 
@@ -65,34 +68,67 @@ class ArgosVoiceService : Service(), SpeechInput.Listener {
         when (result) {
             is SpeechResult.Heard -> {
                 failureStreak = 0
-                transcribe(result.text)
+                if (!transcribe(result.text)) scheduleRelisten()
             }
-            // Failed (silencio/timeout/ruido) nao e erro fatal: so reescuta.
-            is SpeechResult.Failed -> failureStreak++
+            // silencio/timeout/erro: so reescuta, com backoff
+            is SpeechResult.Failed -> {
+                failureStreak++
+                scheduleRelisten()
+            }
         }
-        scheduleRelisten()
     }
 
-    private fun transcribe(transcript: String) {
-        status.report("Ouvi: \"$transcript\"")
-        val commandText = WakePhrase.extract(transcript) ?: return
-        val reply = handle.invoke(CommandRouter.route(commandText))
+    /** @return true se um comando foi engajado (a escuta volta depois da fala). */
+    private fun transcribe(raw: String): Boolean {
+        val commandText = WakePhrase.extract(raw) ?: return false
+        status.report("Ouvi: \"$raw\"")
+        val command = router.route(commandText)
+        if (command is Command.OpenApp && Graph.apps.find(command.query) == null) {
+            rescue(command)
+        } else {
+            respond(command)
+        }
+        return true
+    }
+
+    /**
+     * O vocabulario livre erra nome proprio ("chrome" vira "mim", "prumo" vira
+     * "para um"). Aqui o MESMO audio e re-decodificado com a gramatica dos apps
+     * instalados, que transforma esses nomes em vocabulario.
+     *
+     * So roda quando o app nao foi achado — no caminho comum custa zero.
+     * Fora da main: decodificar leva centenas de ms.
+     */
+    private fun rescue(original: Command.OpenApp) {
+        Thread({
+            val retry = runCatching { input.redecode(AppGrammar.build(Graph.apps.all())) }.getOrNull()
+            val resolved = retry?.let { hypothesis ->
+                val text = WakePhrase.extract(hypothesis) ?: hypothesis
+                (router.route(text) as? Command.OpenApp)
+                    ?.takeIf { Graph.apps.find(it.query) != null }
+            }
+            if (resolved != null) Log.i(TAG, "redecode recuperou: \"$retry\"")
+            handler.post { respond(resolved ?: original) }
+        }, "argos-rescue").start()
+    }
+
+    private fun respond(command: Command) {
+        val reply = handle.invoke(command)
         status.report(reply)
+        // pausar a escuta enquanto fala, senao o Vosk ouve a propria voz
+        input.stop()
         output.say(reply)
-    }
-
-    private fun listen() {
-        if (!input.isListening) input.start()
+        handler.postDelayed({ if (running) input.start() }, AFTER_SPEECH_MS)
     }
 
     /**
      * Backoff: falha seguida nao pode martelar o microfone.
-     * 400ms -> 800 -> 1600 -> ... -> teto de 5s. Zera quando ouve algo.
+     * 400ms -> 800 -> 1600 -> ... -> teto de 5s. Zera quando ouve fala.
      */
     private fun scheduleRelisten() {
         val delay = (BASE_RELISTEN_MS shl failureStreak.coerceAtMost(MAX_BACKOFF_SHIFT))
             .coerceAtMost(MAX_RELISTEN_MS)
-        handler.postDelayed({ if (running && !input.isListening) input.start() }, delay)
+        handler.postDelayed({ if (running) input.start() }, delay)
     }
 
     // ---- notificacao -------------------------------------------------------
@@ -114,6 +150,7 @@ class ArgosVoiceService : Service(), SpeechInput.Listener {
     }
 
     companion object {
+        const val TAG = "Argos"
         const val ACTION_START = "com.argos.action.START"
         const val ACTION_STOP = "com.argos.action.STOP"
         const val IDLE_HINT = "Diga \"Argos\" + comando"
@@ -121,9 +158,10 @@ class ArgosVoiceService : Service(), SpeechInput.Listener {
         private const val NOTIFICATION_ID = 1001
         private const val BASE_RELISTEN_MS = 400L
         private const val MAX_RELISTEN_MS = 5000L
-
-        /** 400ms << 4 = 6.4s, ja acima do teto — limita o deslocamento. */
         private const val MAX_BACKOFF_SHIFT = 4
+
+        /** tempo pra TTS terminar antes de reabrir o microfone */
+        private const val AFTER_SPEECH_MS = 1800L
 
         @Volatile
         var running: Boolean = false

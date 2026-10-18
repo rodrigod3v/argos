@@ -3,6 +3,7 @@ package com.argos.data.app
 import android.content.Context
 import android.content.Intent
 import com.argos.core.model.AppEntry
+import com.argos.core.text.matchesWord
 import com.argos.core.text.norm
 import com.argos.domain.port.AppRepository
 
@@ -28,7 +29,7 @@ class PackageAppRepository(private val context: Context) : AppRepository {
         return entries
     }
 
-    /** exato > prefixo > contem. */
+    /** exato > prefixo > contem > palavra aproximada (STT erra nome proprio). */
     override fun find(query: String): AppEntry? {
         val q = query.norm()
         if (q.isEmpty()) return null
@@ -36,6 +37,7 @@ class PackageAppRepository(private val context: Context) : AppRepository {
         return entries.firstOrNull { it.label.norm() == q }
             ?: entries.firstOrNull { it.label.norm().startsWith(q) }
             ?: entries.firstOrNull { it.label.norm().contains(q) }
+            ?: entries.firstOrNull { it.label.norm().matchesWord(q) }
     }
 
     override fun launch(entry: AppEntry): Boolean {

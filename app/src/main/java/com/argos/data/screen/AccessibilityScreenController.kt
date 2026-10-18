@@ -3,6 +3,7 @@ package com.argos.data.screen
 import android.graphics.Rect
 import android.os.Bundle
 import android.view.accessibility.AccessibilityNodeInfo
+import com.argos.core.text.matchesWord
 import com.argos.core.text.norm
 import com.argos.domain.port.ScreenController
 
@@ -19,9 +20,13 @@ class AccessibilityScreenController(private val nodes: NodeSource) : ScreenContr
         val q = query.norm()
         if (q.isEmpty()) return false
 
-        val match = flatten().firstOrNull { node ->
+        val nodes = flatten()
+        val match = nodes.firstOrNull { node ->
             val value = textOf(node).norm()
             value.isNotEmpty() && (value == q || value.contains(q))
+        } ?: nodes.firstOrNull { node ->
+            val value = textOf(node).norm()
+            value.isNotEmpty() && value.matchesWord(q)
         } ?: return false
 
         val clickable = generateSequence(match) { it.parent }

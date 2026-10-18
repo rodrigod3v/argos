@@ -15,6 +15,12 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1"
+
+        // Vosk traz .so pra 4 ABIs. Sem filtro o APK vai a 70 MB.
+        // O alvo real e arm64; 32 bits fica pra nao excluir aparelho antigo.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     buildTypes {
@@ -37,6 +43,8 @@ android {
     }
 }
 
-// Tier 0 = zero dependencia externa. O bridge do llama.cpp entra no proximo corte.
+// Tier 0 = zero dependencia externa de runtime.
+// Vosk: STT 100% offline (o modelo viaja no APK).
 dependencies {
+    implementation("com.alphacephei:vosk-android:0.3.75")
 }

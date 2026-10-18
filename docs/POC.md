@@ -214,3 +214,98 @@ Push-to-talk é o fallback honesto: perde "mãos livres", mantém o produto de p
 7. Rodar o plano de teste em modo avião
 
 Passo 4 já entrega valor: só trocar o STT remove o Google do caminho.
+
+---
+
+## 13. Resultado verificado (Moto G6 Plus, Android 9, modo offline)
+
+### O que passou
+
+| prova | evidência |
+|---|---|
+| Modelo extrai de assets | `modelo instalado em 4532 ms`, 51 MB em `filesDir` |
+| Vosk carrega | `modelo carregado de vosk-model-small-pt-0.3` |
+| Escuta offline ativa | `escutando offline (16000 Hz)` |
+| **Sem permissão de rede** | `aapt dump permissions` não lista `INTERNET` |
+| APK | **50,1 MB** (era 70,6 MB sem `abiFilters`) |
+| Crash | 0 em toda a bateria de testes |
+| Léxico de verbos | `lexico carregado: 563 formas verbais` |
+
+### Roteador com léxico real (corpus pt-BR)
+
+```
+abrir prumo           -> Abrindo Prumo Entregador.
+abriu o chrome        -> Abrindo Chrome.          <- conjugação
+executa calculadora   -> Abrindo Calculadora.
+lanca youtube         -> Abrindo YouTube.
+digita teste          -> Nenhum campo de texto na tela.
+voltar                -> Voltando.
+home                  -> Inicio.
+```
+
+### Transcrição offline (auto-teste TTS -> WAV -> Vosk)
+
+| frase falada | vocabulário livre | gramática de apps |
+|---|---|---|
+| `argos abrir calculadora` | ✅ exato | ✅ exato |
+| `argos abrir o prumo` | ❌ `argos abrir para um` | ✅ **exato** |
+| `argos abrir chrome` | ❌ `argos abrir mim` | ⚠️ recupera com variantes |
+| `argos digita teste` | ✅ exato | ❌ `argos` |
+| `argos voltar` | ✅ exato | ❌ `argos` |
+
+**Conclusão:** vocabulário livre erra nome próprio; gramática restrita acerta nome
+próprio mas destrói o resto. Por isso nenhum dos dois é usado sozinho — a escuta é
+livre, e a gramática entra só como **recuperação** quando o app não é encontrado.
+
+### Descobertas que mudaram o desenho
+
+1. **Endpointer do Vosk precisa de silêncio de cauda.** No mic real existe; no arquivo
+   não. Sem 1 s de silêncio a última palavra era cortada. Artefato do auto-teste.
+2. **O léxico do modelo é fechado.** `chrome` -> `mim`, `prumo` -> `para um`.
+3. **`[unk]` não salva a gramática.** Com gramática de apps, `digita teste` virou só `argos`.
+4. **`EXTRA_PREFER_OFFLINE` em API 28 derruba o reconhecedor do Google na hora.**
+5. **O corpus pt-BR não tem anglicismo:** `clicar` tem **0 formas** em 195.751 conjugações.
+
+---
+
+## 14. Como executar
+
+### No aparelho
+
+```
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb shell pm grant com.argos android.permission.RECORD_AUDIO
+adb shell settings put secure enabled_accessibility_services com.argos/com.argos.entry.ArgosAccessibilityService
+adb shell settings put secure accessibility_enabled 1
+```
+
+Abrir o app, tocar **Iniciar Argos**. Dizer:
+
+> **"Argos, abrir o Prumo"**
+
+### Verificar que está tudo vivo
+
+```
+adb shell dumpsys activity services com.argos | grep isForeground
+adb logcat -s Argos        # deve mostrar: escutando offline (16000 Hz)
+```
+
+### Provar que não há rede
+
+```
+aapt dump permissions app-debug.apk | grep -i internet    # tem que sair vazio
+```
+
+### Auto-teste sem falar (TTS -> WAV -> Vosk)
+
+```
+adb shell am start -n com.argos/.entry.MainActivity --ez selftest true --es phrase "argos abrir o prumo"
+adb logcat -s Argos
+```
+
+### Rebuild
+
+```
+gradlew.bat assembleDebug
+```
+

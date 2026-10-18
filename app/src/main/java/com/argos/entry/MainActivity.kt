@@ -16,7 +16,6 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import com.argos.BuildConfig
-import com.argos.core.routing.CommandRouter
 import com.argos.di.Graph
 
 /**
@@ -176,18 +175,29 @@ class MainActivity : Activity() {
 
     // ---- gancho de teste (somente debug) -----------------------------------
     //
-    // Valida o pipeline sem microfone:
     //   adb shell am start -n com.argos/.entry.MainActivity --es cmd "abrir chrome"
     //   adb shell am start -n com.argos/.entry.MainActivity --ez voice true
+    //   adb shell am start -n com.argos/.entry.MainActivity --ez selftest true
     // Compila fora do build de release (BuildConfig.DEBUG).
 
     private fun handleDebugIntent(intent: Intent?) {
         intent ?: return
+
         if (intent.getBooleanExtra(EXTRA_VOICE, false) && !ArgosVoiceService.running) {
             toggleService()
         }
+
+        if (intent.getBooleanExtra(EXTRA_SELFTEST, false)) {
+            val phrase = intent.getStringExtra(EXTRA_PHRASE)?.takeIf { it.isNotBlank() }
+                ?: SELFTEST_PHRASE
+            appendLog("[auto] selftest: TTS -> WAV -> Vosk (\"$phrase\")")
+            DebugSelfTest(this).run(phrase) { result ->
+                appendLog("[auto] selftest -> $result")
+            }
+        }
+
         val text = intent.getStringExtra(EXTRA_COMMAND)?.takeIf { it.isNotBlank() } ?: return
-        val reply = Graph.handleCommand.invoke(CommandRouter.route(text))
+        val reply = Graph.handleCommand.invoke(Graph.router.route(text))
         Log.i(TAG, "debug cmd=\"$text\" -> $reply")
         appendLog("[auto] $text -> $reply")
     }
@@ -196,6 +206,9 @@ class MainActivity : Activity() {
         const val REQUEST_CODE = 42
         const val EXTRA_COMMAND = "cmd"
         const val EXTRA_VOICE = "voice"
+        const val EXTRA_SELFTEST = "selftest"
+        const val EXTRA_PHRASE = "phrase"
+        const val SELFTEST_PHRASE = "argos abrir o prumo"
         const val TAG = "Argos"
     }
 }
