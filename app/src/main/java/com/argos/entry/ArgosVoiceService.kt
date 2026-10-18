@@ -78,11 +78,27 @@ class ArgosVoiceService : Service(), SpeechInput.Listener {
         }
     }
 
-    /** @return true se um comando foi engajado (a escuta volta depois da fala). */
+    /**
+     * @return true se um comando foi engajado.
+     *
+     * Reporta SEMPRE o que ouviu. Antes so havia reacao depois da wake word:
+     * quando o STT errava "argos" o app ficava mudo e parecia morto.
+     *
+     * Aceita tambem comando sem a wake word — se a frase ja e um comando valido,
+     * executa. Num assistente pessoal isso vale mais que a pureza do gate.
+     */
     private fun transcribe(raw: String): Boolean {
-        val commandText = WakePhrase.extract(raw) ?: return false
         status.report("Ouvi: \"$raw\"")
-        val command = router.route(commandText)
+        val afterWake = WakePhrase.extract(raw)
+        val text = afterWake ?: raw
+        val command = router.route(text)
+
+        if (command is Command.Unknown) {
+            // so responde "nao entendi" quando foi de fato chamado
+            if (afterWake != null) respond(command)
+            return afterWake != null
+        }
+
         if (command is Command.OpenApp && Graph.apps.find(command.query) == null) {
             rescue(command)
         } else {

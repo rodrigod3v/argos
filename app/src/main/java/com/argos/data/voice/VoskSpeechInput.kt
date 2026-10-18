@@ -40,6 +40,9 @@ class VoskSpeechInput(
     /** audio exato do ultimo enunciado — e o que o re-decode usa */
     @Volatile private var lastUtterance: ShortArray = ShortArray(0)
 
+    /** tamanho da leitura do mic, calculado a partir do buffer do aparelho */
+    @Volatile private var chunk = DEFAULT_CHUNK
+
     @Volatile
     override var isListening: Boolean = false
         private set
@@ -128,6 +131,8 @@ class VoskSpeechInput(
         check(record.state == AudioRecord.STATE_INITIALIZED) {
             "microfone indisponivel (estado ${record.state})"
         }
+        // ler mais que o buffer interno faz read() engasgar em alguns aparelhos
+        chunk = (minBuffer / 2).coerceIn(MIN_CHUNK, MAX_CHUNK)
 
         recorder = record
         isListening = true
@@ -142,11 +147,26 @@ class VoskSpeechInput(
     }
 
     private fun audioLoop(record: AudioRecord, recognizer: Recognizer) {
-        val buffer = ShortArray(CHUNK)
+        val buffer = ShortArray(chunk)
+        var totalSamples = 0L
+        var emptyReads = 0
+        var announced = false
         try {
             while (isListening) {
                 val read = record.read(buffer, 0, buffer.size)
-                if (read <= 0) continue
+                if (read <= 0) {
+                    emptyReads++
+                    if (emptyReads % 50 == 0) {
+                        Log.w(TAG, "mic sem dados: $emptyReads leituras vazias (read=$read)")
+                    }
+                    continue
+                }
+                emptyReads = 0
+                totalSamples += read
+                if (!announced) {
+                    announced = true
+                    Log.i(TAG, "audio fluindo: ${read} amostras por leitura")
+                }
                 ring.write(buffer, read)
 
                 if (!recognizer.acceptWaveForm(buffer, read)) continue
@@ -154,12 +174,16 @@ class VoskSpeechInput(
                 lastUtterance = ring.snapshot()
                 ring.clear()
                 val text = textOf(recognizer.result)
+                // loga SEMPRE: sem isso o app parece surdo quando a wake word falha
+                Log.i(TAG, "ouvi: \"$text\"")
                 if (text.isNotEmpty()) {
                     listener?.onSpeechResult(SpeechResult.Heard(text))
                 }
             }
         } catch (throwable: Throwable) {
             if (isListening) fail("ler audio", throwable)
+        } finally {
+            Log.i(TAG, "audio encerrado: $totalSamples amostras")
         }
     }
 
@@ -193,6 +217,9 @@ class VoskSpeechInput(
 
         /** 20 buffers de 200 ms por segundo */
         const val CHUNK = 3200
+        const val DEFAULT_CHUNK = 3200
+        const val MIN_CHUNK = 1600
+        const val MAX_CHUNK = 8000
         const val RING_SECONDS = 8
         const val CODE_FAIL = -100
     }
